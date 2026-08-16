@@ -52,18 +52,60 @@ def build_UK(theta_K, theta_z):
 # Step 3 : Efficient Fermi Sea & State Generator
 # ==============================================
 
-def get_fermi_sea_amplitudes(M, N_f):
+def get_fermi_sea_amplitudes(M, N_f, boundary='periodic', selection='symmetric'): ##################################
     """
     Slater Determinant generator for the Fermi Sea.
-    """
-    H_sp = np.zeros((M, M))
-    for i in range(M - 1):
-        H_sp[i, i+1] = -1.0
-        H_sp[i+1, i] = -1.0
 
-    energies, vecs = np.linalg.eigh(H_sp)
-    P = vecs[:, :N_f]
-    
+    Parameters
+    ----------
+    M : int
+        Number of sites in one spin block.
+    N_f : int
+        Number of spinless fermions.
+    boundary : str
+        'open' → sine waves (open BC),
+        'periodic' → plane waves (PBC).
+    selection : str
+        For PBC only:
+        'energy_sorted' → fill lowest single-particle energies (default).
+        'symmetric' → choose k-set as in the recursive test code (array_k1 logic).
+                      This may break degeneracies by picking negative k first.
+    """
+    if boundary == 'open':
+        H_sp = np.zeros((M, M))
+        for i in range(M - 1):
+            H_sp[i, i+1] = -1.0
+            H_sp[i+1, i] = -1.0
+        energies, vecs = np.linalg.eigh(H_sp)
+        P = vecs[:, :N_f]
+    elif boundary == 'periodic':
+        if selection == 'symmetric':
+            # Replicate array_k1 logic exactly
+            m_val = M / 2.0
+            if m_val % 2 != 0:  # m_val is not integer when M is odd, but we check float modulo
+                j_vals = np.arange(-int(m_val // 2), int(m_val // 2) + 1)
+            else:
+                j_vals = np.arange(-int(m_val // 2), int(m_val // 2))
+            ks_occ = 2.0 * np.pi * j_vals / M
+            # Now we have a list of ks, but we need exactly N_f of them.
+            # The recursive code uses the first N_f entries (in the order generated).
+            # For the standard half-filling case N_f = M//2, the length of j_vals equals N_f.
+            if len(ks_occ) > N_f:
+                ks_occ = ks_occ[:N_f]   # take the first N_f (likely the more negative ones)
+            # Build plane-wave matrix
+            x = np.arange(M)
+            P = np.exp(1j * np.outer(x, ks_occ))
+        else:  # energy_sorted
+            ks = 2 * np.pi * np.arange(M) / M
+            energies = -2 * np.cos(ks)
+            idx_sort = np.argsort(energies)
+            occupied_idx = idx_sort[:N_f]
+            ks_occ = ks[occupied_idx]
+            x = np.arange(M)
+            P = np.exp(1j * np.outer(x, ks_occ))
+    else:
+        raise ValueError("boundary must be 'open' or 'periodic'")
+
     amplitudes = {}
     for occupied_sites in combinations(range(M), N_f):
         submatrix = P[list(occupied_sites), :]
@@ -71,73 +113,105 @@ def get_fermi_sea_amplitudes(M, N_f):
         if np.abs(amp) > 1e-12:
             bit_integer = sum(2**s for s in occupied_sites)
             amplitudes[bit_integer] = amp + 0.0j
-            
+
     norm = np.sqrt(sum(np.abs(v)**2 for v in amplitudes.values()))
     for k in amplitudes:
         amplitudes[k] /= norm
     return amplitudes
 
-def get_initial_state(N, start_site=2): ###################################################################################################################
+
+def get_initial_state(N, start_site=1, boundary='open', selection='energy_sorted',
+                      flip_bath=False, reverse_up=False):
     """
-    Constructs the initial state for the unfolded Kondo chain.
+    Build the initial state for the unfolded Kondo chain.
 
     Parameters
     ----------
     N : int
-        Number of bath sites per spin (excluding impurity).
+        Number of bath sites per spin.
     start_site : int (1 or 2)
-        If 1: Fermi sea occupies all N sites (standard case).
-        If 2: Site 1 (nearest neighbour to impurity) is forced empty,
-              the Fermi sea fills sites 2..N (projected full-sea state).
+        If 2, project out site 1 (nearest neighbour) from the Fermi sea.
+    boundary : str
+        'open' or 'periodic'.
+    selection : str
+        For PBC: 'energy_sorted' or 'symmetric'.
+    flip_bath : bool
+        If True, apply Pauli X on all bath qubits (particle‑hole transform),
+        matching the recursive code's initial state.
+    reverse_up : bool
+        If True, reverse the bit order of the up (right) block, so that
+        site 0 → qubit N-1 (adjacent to impurity), site N-1 → qubit 0.
+        This matches the recursive code's qubit assignment.
 
     Returns
     -------
     ms : np.ndarray
-        Statevector of length 2**L, with L = 2*N + 1.
+        Statevector of length 2**L, L = 2*N + 1.
     """
     L = 2 * N + 1
     dim = 2**L
     ms = np.zeros(dim, dtype=np.complex128)
 
-    # Always build the full N-site spinless Fermi sea
     N_f = N // 2
-    full_sea = get_fermi_sea_amplitudes(N, N_f)
+    full_sea = get_fermi_sea_amplitudes(N, N_f, boundary=boundary, selection=selection)
 
-    # If we want site 1 empty, project out configurations where the
-    # innermost site (bit 0 in the block) is occupied.
     if start_site == 2:
         projected = {}
         for bits, amp in full_sea.items():
-            if not (bits & 1):          # bit 0 = 0 means innermost site empty
+            if not (bits & 1):
                 projected[bits] = amp
-        # Renormalise
         norm = np.sqrt(sum(abs(v)**2 for v in projected.values()))
         if norm == 0:
-            raise ValueError("Projected state has zero norm. Check filling.")
+            raise ValueError("Projected state has zero norm.")
         for k in projected:
             projected[k] /= norm
         sea_amplitudes = projected
     else:
         sea_amplitudes = full_sea
 
-    # Impurity at centre (bit N = 1)
-    center_index = 1 << N   # same as 2**N
+    # Helper to reverse bits within N bits
+    def reverse_bits(x, n_bits):
+        rev = 0
+        for i in range(n_bits):
+            if (x >> i) & 1:
+                rev |= (1 << (n_bits - 1 - i))
+        return rev
 
-    # Shift for the left (spin-down) block:
-    # Each spin block has N sites; the left block starts at bit (L - N) = N+1
-    shift = L - N   # = N + 1
+    center_index = 1 << N               # impurity bit
+    shift = L - N                        # N + 1, start of down block
 
     for down_bits, down_amp in sea_amplitudes.items():
         for up_bits, up_amp in sea_amplitudes.items():
             total_amp = down_amp * up_amp
-            # Left (down) block shifted to high bits
+
+            # Place down (left) block: identical to before
             shifted_down = down_bits << shift
-            # Right (up) block stays at low bits (0 .. N-1)
-            shifted_up = up_bits
+
+            # Place up (right) block:
+            if reverse_up:
+                # Reverse bit order so that site 0 -> qubit N-1
+                shifted_up = reverse_bits(up_bits, N)
+            else:
+                shifted_up = up_bits   # original mapping
+
             target = shifted_down + center_index + shifted_up
             ms[target] = total_amp
 
+    # Apply bath flip if requested (same as recursive qc.x on all bath qubits)
+    if flip_bath:
+        # Flip bits of all bath qubits (all except impurity qubit N)
+        ms_flipped = np.zeros_like(ms)
+        for idx, amp in enumerate(ms):
+            if amp == 0:
+                continue
+            # Flip bath bits: invert all bits except bit N
+            bath_mask = (1 << L) - 1 - (1 << N)   # all bits except N
+            flipped_idx = idx ^ bath_mask         # XOR flips bath bits
+            ms_flipped[flipped_idx] = amp
+        ms = ms_flipped
+
     return ms
+
 # ==========================================
 # Step 4: Qiskit Circuit Architecture
 # ==========================================
@@ -175,7 +249,7 @@ def build_qiskit_U_F(N, theta_kin, theta_K, theta_z):
     return qc_kin.compose(qc_K)
 
 def build_kinetic_energy_observable(N):
-    """
+    r"""
     Constructs the Qiskit SparsePauliOp for the free fermion kinetic energy:
     H_kin = -t \sum (c^\dagger_j c_{j+1} + h.c.)
     """
@@ -211,42 +285,40 @@ def build_kinetic_energy_observable(N):
 # Step 5: Statevector Time Evolution
 # ==========================================
 
-def run_qiskit_simulation(N, steps, theta_kin, theta_K, theta_z):
+def run_qiskit_simulation(N, steps, theta_kin, theta_K, theta_z,
+                          boundary='periodic', start_site=1, selection='symmetric', flip_bath=False, reverse_up=False):
     L = 2 * N + 1
     print(f"Building Qiskit Circuit for N={N} ({L} qubits)...")
     qc_F = build_qiskit_U_F(N, theta_kin, theta_K, theta_z)
-    
-    # Define the Z observable exactly on the Impurity (Index N)
+
+    # ... Z_imp and H_kin_obs definitions unchanged ...
+        # Define the Z observable exactly on the Impurity (Index N)
     z_string = ['I'] * L
     z_string[N] = 'Z'
     z_string = "".join(z_string)
     Z_imp = SparsePauliOp(z_string)
     
     H_kin_obs = build_kinetic_energy_observable(N)
-    print("Initializing Ground State Fermi Sea (Site 2 outward)...")
-    initial_array = get_initial_state(N, start_site=2)   # Fermi sea starts from site 2##########################################################################
-    
-    # Convert to Qiskit Statevector and fix Endianness
+    print("Initializing Ground State Fermi Sea ...")
+    initial_array = get_initial_state(N, start_site=1, boundary='periodic',
+                                  selection='symmetric',
+                                  flip_bath=True, reverse_up=True)  # ← pass selection
+
     sv = Statevector(initial_array)
-    sv = sv.reverse_qargs() 
-    
+    sv = sv.reverse_qargs()
+
     trajectory_mz = []
     trajectory_heat = []
     print("Beginning Floquet Evolution...")
     for step in range(steps):
-        # Measure expectation value
         mz = sv.expectation_value(Z_imp).real
         heat = sv.expectation_value(H_kin_obs).real
         trajectory_mz.append(mz)
-        trajectory_heat.append(heat)
-        
-        # Output progress every 10 steps
+        trajectory_heat.append(heat)               
         if step % 10 == 0:
             print(f"  Step {step}/{steps} completed. mz = {mz:.4f}")
-            
-        # Evolve state for next step
         sv = sv.evolve(qc_F)
-        
+
     return trajectory_mz, trajectory_heat
 
 # ==========================================
@@ -256,10 +328,10 @@ def run_qiskit_simulation(N, steps, theta_kin, theta_K, theta_z):
 if __name__ == "__main__":
     # We strictly use ODD values of N to preserve particle-hole symmetry
     # Default values
-    N_system = 7                                                         ###############################################################################
+    N_system = 5                                                         ###############################################################################
     theta = np.pi / 3
     theta_k = np.pi / 4
-    t_steps = 400
+    t_steps = 100
 
     # Override if command-line arguments are provided
     if len(sys.argv) > 1:
@@ -274,7 +346,10 @@ if __name__ == "__main__":
     print(f"Starting Qiskit Simulation for N={N_system} (Total Qubits: {2*N_system + 1})...")
     
     # Run the simulation and unpack BOTH observables
-    mz_data, heat_data = run_qiskit_simulation(N_system, t_steps, theta, theta_k, theta_z)
+    mz_data, heat_data = run_qiskit_simulation(
+    N_system, t_steps, theta, theta_k, theta_z,
+    boundary='periodic', start_site=1, selection='symmetric'
+) ###########################
     
     print("\nSimulation Complete. Generating Dual-Panel Plot...")
 
