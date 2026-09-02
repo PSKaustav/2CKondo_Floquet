@@ -13,7 +13,7 @@ def exact_evolution_benchmark(N, Jk, Jz, h, T, N_f):
     psi_0 = build_initial_state(N, orb_up, orb_down, N//2, N//2)
     
     # Build exact UK(0) globally
-    #from helper_functions import build_kondo_gate
+    # from helper_functions import build_kondo_gate
     UK_0_local = build_kondo_gate(Jk, Jz, 0, T, 0)
     
     # Pad to full Hilbert Space (assuming impurity at center)
