@@ -24,15 +24,34 @@ sigma_y = np.array([[0, -1j], [1j, 0]], dtype=complex)
 sigma_z = np.array([[-1, 0], [0, 1]], dtype=complex)
 
 def kron3(a, b, c): 
+    """Computes the Kronecker product of three matrices sequentially.
+
+    Args:
+        a (np.ndarray): First matrix.
+        b (np.ndarray): Second matrix.
+        c (np.ndarray): Third matrix.
+
+    Returns:
+        np.ndarray: The resulting tensor product matrix.
+    """
     return np.kron(np.kron(a, b), c)
 
 # =======================================================================================
 # 2. Dynamic MPS Resizing & Safe Truncation
 # =======================================================================================
 def augment_mps_safe(psi_mps, insert_idx, state_type):
-    """
-    Re-inserts a truncated filled/empty pure-state qubit into the MPS.
+    """Re-inserts a truncated filled/empty pure-state qubit into the MPS.
+
     Implements the augmentation of the few-body wave function.
+    Reference: Eq. (63)[2].
+
+    Args:
+        psi_mps (MPS): The active Matrix Product State.
+        insert_idx (int): The integer index at which to insert the tensor.
+        state_type (int): 1 for a filled orbital, 0 for an empty orbital.
+
+    Returns:
+        MPS: The newly augmented Matrix Product State.
     """
     if insert_idx > 0:
         vL = psi_mps.tensors[insert_idx - 1].shape[2]
@@ -50,10 +69,18 @@ def augment_mps_safe(psi_mps, insert_idx, state_type):
     return psi_mps
 
 def truncate_mps_safe(psi_mps, indices_to_remove):
-    """
-    Removes filled/empty natural-orbital qubits from the active MPS window once 
-    their occupation is near 0 or 1.
-    Reference: Eq. (63)[1].
+    """Removes filled/empty natural-orbital qubits from the active MPS window.
+
+    Projects the unentangled states back into the adjacent tensors once their 
+    occupation reaches 0 or 1. Reference: Eq. (63)[2].
+
+    Args:
+        psi_mps (MPS): The active Matrix Product State.
+        indices_to_remove (list of tuple): List of ``(idx, state)`` tuples 
+            to be extracted and absorbed.
+
+    Returns:
+        MPS: The safely truncated Matrix Product State.
     """
     for (idx, state) in sorted(indices_to_remove, key=lambda x: x[0], reverse=True):
         T = psi_mps.tensors[idx]
@@ -78,9 +105,20 @@ def truncate_mps_safe(psi_mps, indices_to_remove):
 # 3. Initialization & Classical Single-Particle Tools
 # =======================================================================================
 def get_free_propagator(L, theta, n, use_trotter=True, boundary='open'):
-    """
-    Returns U_TE(n), the L x L single-particle bath propagator.
-    Reference: Eq. (5) and free evolution under H1[1].
+    """Returns the single-particle bath propagator matrix.
+
+    Evaluates the free evolution under the hopping Hamiltonian.
+    Reference: Eq. (8)[2].
+
+    Args:
+        L (int): Number of sites in the chain.
+        theta (float): The hopping parameter angle.
+        n (int): The current Floquet step index.
+        use_trotter (bool, optional): Whether to use discrete brickwall evolution. Defaults to True.
+        boundary (str, optional): Boundary conditions ('open' or 'periodic'). Defaults to 'open'.
+
+    Returns:
+        np.ndarray: The L x L unitary propagator matrix.
     """
     def bond_rotation(i, angle):
         c = np.cos(angle)
@@ -116,6 +154,14 @@ def get_free_propagator(L, theta, n, use_trotter=True, boundary='open'):
         return np.eye(L, dtype=complex) if n == 0 else np.linalg.matrix_power(U_step, n)
 
 def build_initial_orbitals(N_bath):
+    """Constructs the initial momentum-space orbitals for the non-interacting bath.
+
+    Args:
+        N_bath (int): Number of bath sites.
+
+    Returns:
+        tuple: Two np.ndarray matrices containing the Up and Down bath orbitals.
+    """
     x, m = np.arange(N_bath), N_bath / 2.0
     j_range = range(-int(m // 2), int(m // 2) + 1) if m % 2 != 0 else range(-int(m // 2), int(m // 2))
     k_occ = np.array([2.0 * np.pi * j / N_bath for j in j_range])
@@ -124,9 +170,21 @@ def build_initial_orbitals(N_bath):
     return orb, orb
 
 def build_initial_state(N, orb_up, orb_down, n_up, n_down):
-    """
-    Builds the explicit initial Fermi sea state. 1 = filled, 0 = unfilled.
-    Impurity initialized to ket 0 (Down).
+    """Builds the explicit initial Fermi sea many-body state.
+
+    Constructs the ground state of the free Hamiltonian. Conventionally,
+    1 denotes a filled orbital and 0 denotes an unfilled orbital.
+    Reference: Eq. (11)[2].
+
+    Args:
+        N (int): Number of bath sites per spin channel.
+        orb_up (np.ndarray): The up-spin orbital matrix.
+        orb_down (np.ndarray): The down-spin orbital matrix.
+        n_up (int): Number of filled up-spin orbitals.
+        n_down (int): Number of filled down-spin orbitals.
+
+    Returns:
+        np.ndarray: The 2^(2N+1) dense statevector array.
     """
     psi = np.zeros(2 ** (2 * N + 1), dtype=complex)
     for down_occ in combinations(range(N), n_down):
@@ -142,6 +200,16 @@ def build_initial_state(N, orb_up, orb_down, n_up, n_down):
     return psi
 
 def state_mps(psi, N, bond_dim=np.inf):
+    """Encodes a dense statevector into a Matrix Product State (MPS) via SVD.
+
+    Args:
+        psi (np.ndarray): The 2^(2N+1) dense statevector.
+        N (int): The number of bath sites per spin.
+        bond_dim (int, optional): The maximum virtual bond dimension. Defaults to np.inf.
+
+    Returns:
+        MPS: The resulting Matrix Product State.
+    """
     tensors, chi_left, T = [], 1, psi.reshape([2] * (2 * N + 1))
     for _ in range(2 * N):
         U, _, _, V = apply_svd(T.reshape(chi_left, 2, -1, 1), bond_dim=bond_dim, direction='right', preserve_norm=True, tol=1e-10)
@@ -150,6 +218,18 @@ def state_mps(psi, N, bond_dim=np.inf):
     return MPS(nqbits=2 * N + 1, phys_dim=2, tensors=tensors, bond_dim=bond_dim, preserve_norm=True, trunc_tol=1e-10)
 
 def classify_orb(evals, tol=1e-10):
+    """Classifies natural orbitals into filled, active, or empty sets.
+
+    Orbitals are categorized based on their 1RDM eigenvalues.
+    Reference: Eq. (37)[2].
+
+    Args:
+        evals (np.ndarray): The array of 1RDM eigenvalues.
+        tol (float, optional): The numerical tolerance for occupation. Defaults to 1e-10.
+
+    Returns:
+        tuple: Three lists containing indices for filled, active, and empty orbitals.
+    """
     filled, active, empty = [], [], []
     for i, occ in enumerate(evals):
         if occ >= 1.0 - tol: filled.append(i)
@@ -158,7 +238,19 @@ def classify_orb(evals, tol=1e-10):
     return filled, active, empty
 
 def build_1rdm_bath(psi_mps, bath_qubits, imp_qubit):
-    """Computes 1RDM C^sigma_ij(n) from active MPS. Reference: Eq. (7)[1]."""
+    """Computes the 1-body Reduced Density Matrix (1RDM) from the MPS.
+
+    Evaluates the correlation matrix for the active natural orbitals.
+    Reference: Eq. (35)[2].
+
+    Args:
+        psi_mps (MPS): The active Matrix Product State.
+        bath_qubits (list): The list of physical qubit indices for the bath.
+        imp_qubit (int): The physical index of the impurity qubit.
+
+    Returns:
+        np.ndarray: The computed correlation matrix.
+    """
     N_total, n = psi_mps.nqbits, len(bath_qubits)
     C = np.zeros((n, n), dtype=complex)
     Nop = (I2 - Z_OP) / 2  
@@ -186,139 +278,98 @@ def build_1rdm_bath(psi_mps, bath_qubits, imp_qubit):
 # 4. Givens Rotations & Classical Reductions
 # =======================================================================================
 def apply_two_qubit_gate(psi_mps, mat, qi, qj):
+    """Applies a 2-qubit gate to the MPS, automatically handling internal FSWAPs.
+
+    Args:
+        psi_mps (MPS): The active Matrix Product State.
+        mat (np.ndarray): The 4x4 unitary matrix representing the operation.
+        qi (int): Physical index of the first qubit.
+        qj (int): Physical index of the second qubit.
+
+    Returns:
+        MPS: The updated Matrix Product State.
+
+    Raises:
+        ValueError: If the qubits are not strictly adjacent.
+    """
     if qj == qi + 1: return Gate(matrix=mat, indices=(qi, qj)) @ psi_mps
     elif qi == qj + 1: return Gate.FSWAP(indices=(qj, qi), phys_dim=2) @ Gate(matrix=mat, indices=(qj, qi)) @ Gate.FSWAP(indices=(qj, qi), phys_dim=2) @ psi_mps
     else: raise ValueError(f"qubits {qi},{qj} not adjacent")
 
 def fermionic_givens_gate_matrix(theta, phi):
+    """Generates a 4x4 fermionic parity-preserving Givens gate matrix.
+
+    Args:
+        theta (float): The rotational angle.
+        phi (float): The phase parameter.
+
+    Returns:
+        np.ndarray: The 4x4 unitary block matrix.
+    """
     c, s, ph = np.cos(theta), np.sin(theta), np.exp(1j * phi)
     phc = np.conj(ph)
     return np.array([[1, 0, 0, 0], [0, c, -phc * s, 0], [0, s, phc * c, 0], [0, 0, 0, phc]], dtype=complex)
 
 def fermionic_givens_gate_matrix_square(theta, phi):
+    """Generates a 4x4 fermionic Givens gate specific for the frame update.
+
+    Args:
+        theta (float): The rotational angle.
+        phi (float): The phase parameter.
+
+    Returns:
+        np.ndarray: The 4x4 unitary block matrix.
+    """
     c, s, ph = np.cos(theta), np.sin(theta), np.exp(1j * phi)
     phc = np.conj(ph)
     return np.array([[1, 0, 0, 0], [0, c, -phc * s, 0], [0, s, phc * c, 0], [0, 0, 0, phc]], dtype=complex)
 
 def get_actual_two_site_gate(theta, phi, q_left, q_right):
+    """Generates the appropriately mapped 4x4 gate for targeted application.
+
+    Automatically handles internal swap ordering depending on directional targeting.
+
+    Args:
+        theta (float): The rotational angle.
+        phi (float): The phase parameter.
+        q_left (int): Physical index of the left qubit.
+        q_right (int): Physical index of the right qubit.
+
+    Returns:
+        np.ndarray: The localized 4x4 unitary matrix.
+
+    Raises:
+        ValueError: If qubits are not adjacent.
+    """
     G4 = fermionic_givens_gate_matrix(theta, phi)
     if q_right == q_left + 1: return G4
     if q_left == q_right + 1: return _SWAP4 @ G4 @ _SWAP4
     raise ValueError(f'qubits {q_left} and {q_right} are not adjacent')
 
 def extract_single_particle_block_from_gate(G4):
+    """Extracts the 2x2 single-particle block from a 4x4 unitary gate.
+
+    Args:
+        G4 (np.ndarray): The 4x4 unitary interaction block.
+
+    Returns:
+        np.ndarray: The 2x2 extracted single-particle mapping.
+    """
     return np.array([[G4[2, 2], G4[2, 1]], [G4[1, 2], G4[1, 1]]], dtype=complex)
 
-def reduce_vector_classically(vector, reduce_position='first'):
-    """Classical reduction yielding Givens targets without touching the MPS."""
-    v_ord = vector[::-1].copy() if reduce_position == 'last' else vector.copy()
-    norm = np.linalg.norm(v_ord)
-    if norm < 1e-14: return vector.copy().astype(complex)
-    decomp, _, _ = givens_decomposition((v_ord / norm).reshape(1, -1))
-    v = v_ord.copy()
-    for parallel_group in decomp:
-        for (i, j, theta, phi) in parallel_group:
-            G4 = fermionic_givens_gate_matrix(theta, phi)
-            U2 = extract_single_particle_block_from_gate(G4)
-            vi, vj = v[i], v[j]
-            v[i], v[j] = U2[0, 0] * vi + U2[0, 1] * vj, U2[1, 0] * vi + U2[1, 1] * vj
-    return v[::-1] if reduce_position == 'last' else v
-
-def apply_reduction_as_gates(psi_mps, vector, physical_qubits, reduce_position='first'):
-    """Applies Q_few targeting exactly the extracted rank-1 bath mode."""
-    v_ord = vector[::-1].copy() if reduce_position == 'last' else vector.copy()
-    order = physical_qubits[::-1] if reduce_position == 'last' else physical_qubits
-    norm = np.linalg.norm(v_ord)
-    if norm < 1e-14: return psi_mps, vector.copy().astype(complex)
-    decomp, _, _ = givens_decomposition((v_ord / norm).reshape(1, -1))
-    for grp in decomp:
-        for (i, j, theta, phi) in grp:
-            G4 = get_actual_two_site_gate(theta, phi, order[i], order[j])
-            psi_mps = apply_two_qubit_gate(psi_mps, G4, order[i], order[j])
-            v_ord[i], v_ord[j] = extract_single_particle_block_from_gate(G4) @ np.array([v_ord[i], v_ord[j]], dtype=complex)
-    return psi_mps, (v_ord[::-1] if reduce_position == 'last' else v_ord)
-
-def build_Q_matrix(N, n_f, n_a, n_e, vec_f, sub_v, vec_e, w_start, w_end):
-    """Builds the N x N classical matrix Q(n) representing Q_few Q_empty Q_full. Reference: Eq. (48)[1]."""
-    def reduce_block(block_vec, reduce_position, dim):
-        v = block_vec.astype(complex).copy()
-        v_ord = v[::-1].copy() if reduce_position == 'last' else v.copy()
-        decomp, _, _ = givens_decomposition((v_ord / np.linalg.norm(v_ord)).reshape(1, -1))
-        Q = np.eye(dim, dtype=complex)
-        for grp in decomp:
-            for (i, j, theta, phi) in grp:
-                G4 = get_actual_two_site_gate(theta, phi, i, j)
-                U2 = extract_single_particle_block_from_gate(G4)
-                G = np.eye(dim, dtype=complex)
-                G[np.ix_([i, j], [i, j])] = U2
-                Q = G @ Q
-                v_ord[i], v_ord[j] = U2 @ np.array([v_ord[i], v_ord[j]], dtype=complex)
-        return Q, (v_ord[::-1] if reduce_position == 'last' else v_ord)
-
-    Q_f, _ = reduce_block(vec_f, 'last', n_f) if n_f > 0 else (np.eye(n_f, dtype=complex), vec_f)
-    Q_e, _ = reduce_block(vec_e, 'first', n_e) if n_e > 0 else (np.eye(n_e, dtype=complex), vec_e)
-
-    M1 = block_diag(Q_f, np.eye(n_a, dtype=complex), Q_e)
-    win_len = w_end - w_start
-    Q_few = np.eye(win_len, dtype=complex)
-    if win_len > 0 and np.linalg.norm(sub_v) > 1e-14:
-        sub_v_copy = sub_v.astype(complex).copy()
-        decomp, _, _ = givens_decomposition((sub_v_copy / np.linalg.norm(sub_v_copy)).reshape(1, -1))
-        for grp in decomp:
-            for (i, j, theta, phi) in grp:
-                G4 = get_actual_two_site_gate(theta, phi, i, j)
-                U2 = extract_single_particle_block_from_gate(G4)
-                G = np.eye(win_len, dtype=complex)
-                G[np.ix_([i, j], [i, j])] = U2
-                Q_few = G @ Q_few
-                sub_v_copy[i], sub_v_copy[j] = U2 @ np.array([sub_v_copy[i], sub_v_copy[j]], dtype=complex)
-
-    M2 = np.eye(N, dtype=complex)
-    if win_len > 0: M2[w_start:w_end, w_start:w_end] = Q_few
-    return M1 @ M2
-
-def apply_qfull_qempty_qfew_one_spin(psi_mps, v_f, v_a, v_e, phys_qubits):
-    """
-    Applies Q_few^dag mapping the augmented MPS to the fewest-body ordered basis.
-    Extracts the rank-1 coupling yielding N_active + 2 orbitals.
-    Reference: Eq. (46), (47), and (48)[1].
-    """
-    f_red = reduce_vector_classically(v_f, 'last')
-    e_red = reduce_vector_classically(v_e, 'first')
-    
-    vec = np.concatenate((f_red, v_a, e_red)).astype(complex)
-    nz = np.flatnonzero(np.abs(vec) > 1e-12)
-    start, end = (nz[0], nz[-1] + 1) if len(nz) > 0 else (0, 0)
-    
-    if len(nz) > 0:
-        psi_mps, _sub_trans = apply_reduction_as_gates(psi_mps, vec[start:end], phys_qubits, 'last')
-    
-    c_idx = len(phys_qubits) - 1 if len(nz) > 0 else 0
-    Q_sigma = build_Q_matrix(len(v_f) + len(v_a) + len(v_e), len(v_f), len(v_a), len(v_e), v_f, vec[start:end], v_e, start, end)
-    return psi_mps, phys_qubits[c_idx], Q_sigma, (start, end)
-
-def move_mode_adjacent_to_impurity(psi_mps, curr_q, chain_qs):
-    target_q = chain_qs[0] 
-    if curr_q == target_q: return psi_mps, curr_q, []
-    pos, step, perm = chain_qs.index(curr_q), -1 if chain_qs.index(curr_q) > 0 else 1, []
-    for p in range(pos, 0, step):
-        psi_mps = apply_two_qubit_gate(psi_mps, FSWAP_MAT, curr_q, chain_qs[p + step])
-        perm.append((curr_q, chain_qs[p + step]))
-        curr_q = chain_qs[p + step]
-    return psi_mps, curr_q, perm
-
-def apply_column_swaps(V, permutation, local_idx_map):
-    for (qa, qb) in permutation:
-        ia, ib = local_idx_map[qa], local_idx_map[qb]
-        V[:, [ia, ib]] = V[:, [ib, ia]]
-    return V
-
-
-### Some updated functions for Q_full, Q_empty and Q_few added below
 def _classical_givens_reduction(vec, target_pos='last'):
-    """
-    Auxiliary function to construct a classical N x N Givens reduction matrix.
-    Operates strictly on the classical coefficients[cite: 5, 8].
+    """Constructs a classical N x N Givens reduction matrix.
+
+    Operates strictly on the classical coefficients to isolate a target orbital.
+    Reference: Eq. (46)[2].
+
+    Args:
+        vec (np.ndarray): The vector of coefficients to be reduced.
+        target_pos (str, optional): 'last' or 'first', dictating where the 
+            amplitude should accumulate. Defaults to 'last'.
+
+    Returns:
+        np.ndarray: The resulting classical unitary matrix.
     """
     dim = len(vec)
     if dim <= 1:
@@ -348,20 +399,39 @@ def _classical_givens_reduction(vec, target_pos='last'):
             
     return Q
 
-def build_qfullempty_classically(v_f, v_e):
+def build_qfullempty_classically(v_f, v_e, chain_type):
+    """Builds the Q_full and Q_empty matrices classically based on coefficient vectors.
+
+    Uses the ordering convention derived from the up and down spin chain layouts.
+    Reference: Eq. (46)[2].
+
+    Args:
+        v_f (np.ndarray): The coefficient vector for the filled orbitals.
+        v_e (np.ndarray): The coefficient vector for the empty orbitals.
+        chain_type (str): 'up' or 'down', dictating the target position based on 
+            the proximity to the impurity.
+
+    Returns:
+        tuple: The Q_full and Q_empty classical matrices.
     """
-    Builds the Q_full and Q_empty matrices classically based on the coefficient vectors[cite: 5].
-    Ordering convention expects arrays structured as {f_{N-1}, ..., f_0} and {e_{N'-1}, ..., e_0}.
-    Because f_0 and e_0 are the target extraction modes, they correspond to the 'last' index[cite: 5].
-    """
-    Q_full = _classical_givens_reduction(v_f, target_pos='last')
-    Q_empty = _classical_givens_reduction(v_e, target_pos='last')
+    target_pos = 'last' if chain_type == 'up' else 'first'
+    Q_full = _classical_givens_reduction(v_f, target_pos=target_pos)
+    Q_empty = _classical_givens_reduction(v_e, target_pos=target_pos)
     return Q_full, Q_empty
 
 def build_qfew(v_target, physical_qubits, target_pos='last'):
-    """
-    Builds the classical Q_few matrix and the corresponding sequence of 4x4 quantum gates 
-    required to physically route the target orbital to the impurity boundary[cite: 5].
+    """Builds the classical Q_few matrix and the corresponding quantum gates.
+
+    Generates the sequence of 4x4 quantum gates required to physically route 
+    the target orbital to the impurity boundary. Reference: Eq. (46)[2].
+
+    Args:
+        v_target (np.ndarray): The composite vector representing the effective orbital.
+        physical_qubits (list): The list of contiguous physical qubits mapped to the vector.
+        target_pos (str, optional): 'last' or 'first', dictating the extraction boundary. Defaults to 'last'.
+
+    Returns:
+        tuple: The classical N x N Q_few matrix, and a list of (qi, qj, Gate) tuples.
     """
     dim = len(v_target)
     Q_few_classical = np.eye(dim, dtype=complex)
@@ -385,7 +455,7 @@ def build_qfew(v_target, physical_qubits, target_pos='last'):
             phys_i, phys_j = order[i], order[j]
             loc_i, loc_j = local_order[i], local_order[j]
             
-            # 1. Classical Matrix Construction
+            # Classical Matrix Construction
             c, s = np.cos(theta), np.sin(theta)
             phc = np.exp(-1j * phi)
             U2 = np.array([[c, -phc * s], [s, phc * c]], dtype=complex)
@@ -394,29 +464,79 @@ def build_qfew(v_target, physical_qubits, target_pos='last'):
             G_sp[np.ix_([loc_i, loc_j], [loc_i, loc_j])] = U2
             Q_few_classical = G_sp @ Q_few_classical
             
-            # 2. Quantum Gate Generation
-            # fermionic_givens_gate_matrix yields the 4x4 representation[cite: 8]
+            # Quantum Gate Generation
             G4 = fermionic_givens_gate_matrix(theta, phi)
             quantum_gates.append((phys_i, phys_j, G4))
             
     return Q_few_classical, quantum_gates
 
 def apply_qfew_quantum_gates(psi_mps, quantum_gates):
-    """
-    Applies the sequence of pre-computed Q_few quantum gates directly to the active MPS[cite: 5].
-    Because physical_qubits align contiguously in the MPS, this sequence natively sweeps the 
-    mode without requiring external routing SWAPs.
+    """Applies the sequence of pre-computed Q_few quantum gates directly to the active MPS.
+
+    Reference: Eq. (46)[2].
+
+    Args:
+        psi_mps (MPS): The active Matrix Product State.
+        quantum_gates (list): A list of tuples ``(qi, qj, G4)`` representing the Givens rotations.
+
+    Returns:
+        MPS: The updated Matrix Product State.
     """
     for (qi, qj, G4) in quantum_gates:
         psi_mps = apply_two_qubit_gate(psi_mps, G4, qi, qj)
     return psi_mps
 
+#def move_mode_adjacent_to_impurity(psi_mps, curr_q, chain_qs):
+    """Routes an effective mode strictly adjacent to the impurity via FSWAPs.
 
+    Args:
+        psi_mps (MPS): The active Matrix Product State.
+        curr_q (int): The current physical index of the mode.
+        chain_qs (list): The localized chain indices.
+
+    Returns:
+        tuple: The updated MPS, the final target index, and the sequence permutation list.
+    """
+    #target_q = chain_qs[0] 
+    #if curr_q == target_q: return psi_mps, curr_q, []
+    #pos, step, perm = chain_qs.index(curr_q), -1 if chain_qs.index(curr_q) > 0 else 1, []
+    #for p in range(pos, 0, step):
+    #    psi_mps = apply_two_qubit_gate(psi_mps, FSWAP_MAT, curr_q, chain_qs[p + step])
+    #    perm.append((curr_q, chain_qs[p + step]))
+    #    curr_q = chain_qs[p + step]
+    #return psi_mps, curr_q, perm
+
+#def apply_column_swaps(V, permutation, local_idx_map):
+    """Applies the recorded permutations natively to the classical frame matrix.
+
+    Args:
+        V (np.ndarray): The classical frame matrix.
+        permutation (list): The list of ``(qa, qb)`` swap instructions.
+        local_idx_map (dict): A dictionary mapping physical indices to their local matrix equivalents.
+
+    Returns:
+        np.ndarray: The updated classical frame matrix.
+    """
+    #for (qa, qb) in permutation:
+    #    ia, ib = local_idx_map[qa], local_idx_map[qb]
+    #    V[:, [ia, ib]] = V[:, [ib, ia]]
+    #return V
 
 # =======================================================================================
 # 5. Natural Orbital Frame Advance & Kondo Gates
 # =======================================================================================
 def apply_givens_circuit(psi_mps, decomp, diagonal, physical_qubits):
+    """Applies a decomposed sequence of Givens rotations natively to the MPS.
+
+    Args:
+        psi_mps (MPS): The active Matrix Product State.
+        decomp (list): The output list of layered Givens operations.
+        diagonal (list): The vector of localized phase shifts.
+        physical_qubits (list): The mapped list of physical interacting qubits.
+
+    Returns:
+        MPS: The updated Matrix Product State.
+    """
     psi_no = psi_mps.copy()
     for local_site, phase in enumerate(diagonal):
         psi_no = Gate(matrix=np.array([[1, 0], [0, phase]], dtype=complex), indices=(physical_qubits[local_site],)) @ psi_no
@@ -426,10 +546,27 @@ def apply_givens_circuit(psi_mps, decomp, diagonal, physical_qubits):
             psi_no = apply_two_qubit_gate(psi_no, G, physical_qubits[i], physical_qubits[j])
     return psi_no
 
-def advance_natural_orbital_frame(psi_mps, V_sigma, bath_qubits, imp_qubit, L_total, active_indices_in_L):
-    """
-    Diagonalizes 1RDM to find u_sigma(n+1) and natively updates U_sigma(n+1) via classical multiplication.
-    Reference: Eq. (59), (60), (61)[1].
+def advance_natural_orbital_frame(psi_mps, V_sigma, bath_qubits, imp_qubit, L_total, active_indices_in_L, chain_type):
+    """Diagonalizes the 1RDM to update the natural orbital frame.
+
+    Classifies and physically sweeps trivial states to the outer boundaries 
+    of the tensor network based on the chain type directional sorting. 
+    Reference: Eq. (59) and Eq. (61)[2].
+
+    Args:
+        psi_mps (MPS): The active Matrix Product State.
+        V_sigma (np.ndarray): The classical frame matrix from the previous step.
+        bath_qubits (list): The list of physical qubit indices for this chain.
+        imp_qubit (int): The physical index of the impurity qubit.
+        L_total (int): The total number of bath sites in this chain.
+        active_indices_in_L (list): The global indices corresponding to the active window.
+        chain_type (str): 'up' or 'down', dictating the required spatial sorting.
+
+    Returns:
+        tuple: The updated MPS, the updated U_sigma(n+1) matrix, and the sorted eigenvalues.
+
+    Raises:
+        ValueError: If chain_type is not 'up' or 'down'.
     """
     C = build_1rdm_bath(psi_mps, bath_qubits, imp_qubit)
     evals, evecs = np.linalg.eigh(C)
@@ -438,8 +575,21 @@ def advance_natural_orbital_frame(psi_mps, V_sigma, bath_qubits, imp_qubit, L_to
     off_diag_norm = np.linalg.norm(C_diag - np.diag(np.diagonal(C_diag)))
     assert off_diag_norm < 1e-10, f"1RDM not strictly diagonalized! Off-diagonal norm: {off_diag_norm}"
 
-    order = np.argsort(evals)[::-1]
-    evals_sorted, evecs_sorted = evals[order], evecs[:, order]
+    order_desc = np.argsort(evals)[::-1]
+    evals_desc = evals[order_desc]
+    evecs_desc = evecs[:, order_desc]
+    
+    filled, active, empty = classify_orb(evals_desc, tol=1e-10)
+    
+    if chain_type == 'up':
+        smart_order = filled[::-1] + empty[::-1] + active[::-1]
+    elif chain_type == 'down':
+        smart_order = active + empty + filled
+    else:
+        raise ValueError("chain_type must be 'up' or 'down'")
+
+    evals_sorted = evals_desc[smart_order]
+    evecs_sorted = evecs_desc[:, smart_order]
     
     decomp, diagonal = givens_decomposition_square(evecs_sorted.conj())
     psi_mps = apply_givens_circuit(psi_mps, decomp, diagonal, bath_qubits)
@@ -453,10 +603,20 @@ def advance_natural_orbital_frame(psi_mps, V_sigma, bath_qubits, imp_qubit, L_to
     return psi_mps, U_sigma_new, evals_sorted
 
 def build_kondo_gate(Jk, Jz, h, T, n):
-    """
-    Builds the 3-qubit Kondo gate exactly isolating interactions inside the 
-    few-body natural orbital basis.
-    Reference: Eq. (5) and Eq. (6)[1].
+    """Builds the 3-qubit Kondo gate exactly isolating interactions inside the few-body basis.
+
+    Strictly enforces the S_z conserving basis: |n_up, impurity, n_down>.
+    Reference: Eq. (14)[cite: 1] and Eq. (12)[2].
+
+    Args:
+        Jk (float): The transverse Kondo coupling parameter.
+        Jz (float): The longitudinal Kondo coupling parameter.
+        h (float): The magnetic field applied to the impurity.
+        T (float): The Floquet time period step size.
+        n (int): The current step index.
+
+    Returns:
+        np.ndarray: The 8x8 unitary gate matrix.
     """
     theta_K = Jk * T / 2.0
     theta_z = Jz * T / 2.0
@@ -477,75 +637,21 @@ def build_kondo_gate(Jk, Jz, h, T, n):
     return K_n.conj().T @ UK_0 @ K_n
 
 def apply_3_qubit_gate_custom(psi_mps, mat, q1, q2, q3):
+    """Applies a 3-qubit gate strictly on adjacent MPS tensors.
+
+    Args:
+        psi_mps (MPS): The active Matrix Product State.
+        mat (np.ndarray): The 8x8 unitary matrix.
+        q1 (int): First qubit index.
+        q2 (int): Second qubit index.
+        q3 (int): Third qubit index.
+
+    Returns:
+        MPS: The updated Matrix Product State.
+    """
     return Gate(matrix=mat, indices=(q1, q2, q3)) @ psi_mps
 
 # =======================================================================================
 # 6. Primary Loop Step Execution
 # =======================================================================================
-def sergio_step(psi_mps, U_up, U_down, V_up, V_down, evals_up, evals_down, n, Jk, Jz, h, T, theta, L_bath, tol=1e-12):
-    """
-    Executes a single step (n -> n + 1) explicitly enforcing the Q_few^dag augmentation.
-    Takes in V_up, V_down and outputs them for the next step alongside U(n+1)[1].
-    """
-    # 1. Update Free Evolution
-    U_TE = get_free_propagator(L_bath, theta, n, use_trotter=True)
-    
-    # 2. Extract specific coupling modes corresponding to site 0
-    v_up_conj = (U_TE @ U_up)[0, :]
-    v_down_conj = (U_TE @ U_down)[0, :]
-    v_up, v_down = v_up_conj.conj(), v_down_conj.conj()
-
-    # 3. Classify Orbitals & Split
-    filled_u, active_u, empty_u = classify_orb(evals_up, tol)
-    filled_d, active_d, empty_d = classify_orb(evals_down, tol)
-    
-    v_f_u, v_a_u, v_e_u = v_up[filled_u], v_up[active_u], v_up[empty_u]
-    v_f_d, v_a_d, v_e_d = v_down[filled_d], v_down[active_d], v_down[empty_d]
-
-    M_u, M_d = len(active_u), len(active_d)
-    
-    # 4. Augment MPS exactly preserving active layout
-    psi_mps = augment_mps_safe(psi_mps, 0, state_type=1)        
-    psi_mps = augment_mps_safe(psi_mps, M_u + 1, state_type=0)  
-    
-    imp_q = M_u + 2
-    psi_mps = augment_mps_safe(psi_mps, imp_q + 1, state_type=1)        
-    psi_mps = augment_mps_safe(psi_mps, imp_q + M_d + 2, state_type=0)  
-    
-    # 5. Apply Q_few^dag to extract the rank-1 coupling
-    up_phys_qubits = list(range(0, M_u + 2))
-    psi_mps, c_eff_up_q, Q_up, (start_u, end_u) = apply_qfull_qempty_qfew_one_spin(psi_mps, v_f_u, v_a_u, v_e_u, up_phys_qubits)
-    
-    down_phys_qubits = list(range(imp_q + 1, imp_q + M_d + 3))
-    psi_mps, c_eff_down_q, Q_down, (start_d, end_d) = apply_qfull_qempty_qfew_one_spin(psi_mps, v_f_d, v_a_d, v_e_d, down_phys_qubits)
-    
-    # 6. FSWAP effective modes directly adjacent to the Impurity
-    psi_mps, c_eff_up_q, perm_up = move_mode_adjacent_to_impurity(psi_mps, c_eff_up_q, up_phys_qubits[::-1])
-    psi_mps, c_eff_down_q, perm_down = move_mode_adjacent_to_impurity(psi_mps, c_eff_down_q, down_phys_qubits)
-    
-    Q_up = apply_column_swaps(Q_up, perm_up, {q: i for i, q in enumerate(up_phys_qubits)})
-    Q_down = apply_column_swaps(Q_down, perm_down, {q: i for i, q in enumerate(down_phys_qubits)})
-    
-    # 7. Step classical frame V_sigma(n) = U_sigma(n) Q(n)[1]
-    V_up_new, V_down_new = U_up @ Q_up, U_down @ Q_down
-    
-    # 8. Apply 3-Qubit Interaction Gate [Eq. (57)][1]
-    UK_n = build_kondo_gate(Jk, Jz, h, T, n)
-    psi_mps = apply_3_qubit_gate_custom(psi_mps, UK_n, imp_q - 1, imp_q, imp_q + 1)
-    
-    # 9. Advance Natural Orbital Frame: U_sigma(n+1) = V_sigma(n) @ u_sigma(n+1) [Eq. (61)][1]
-    active_indices_u = list(range(start_u, end_u))
-    psi_mps, U_up_next, evals_up_next = advance_natural_orbital_frame(psi_mps, V_up_new, up_phys_qubits, imp_q, L_bath, active_indices_u)
-    
-    active_indices_d = list(range(start_d, end_d))
-    psi_mps, U_down_next, evals_down_next = advance_natural_orbital_frame(psi_mps, V_down_new, down_phys_qubits, imp_q, L_bath, active_indices_d)
-    
-    # 10. Classify and Truncate Inactive Subspaces
-    filled_u_next, active_u_next, empty_u_next = classify_orb(evals_up_next, tol)
-    filled_d_next, active_d_next, empty_d_next = classify_orb(evals_down_next, tol)
-    
-    to_remove_up = [(up_phys_qubits[i], 1) for i in filled_u_next] + [(up_phys_qubits[i], 0) for i in empty_u_next]
-    to_remove_down = [(down_phys_qubits[i], 1) for i in filled_d_next] + [(down_phys_qubits[i], 0) for i in empty_d_next]
-    psi_mps = truncate_mps_safe(psi_mps, to_remove_up + to_remove_down)
-    
-    return psi_mps, U_up_next, U_down_next, V_up_new, V_down_new, evals_up_next, evals_down_next, len(active_u_next), len(active_d_next)
+# sergio_step to be added later

@@ -1,5 +1,6 @@
 import numpy as np
 from helper_functions_gem import *
+from openfermion.linalg.givens_rotations import givens_decomposition
 
 def run_occupancy_verification():
     # =========================================================================
@@ -114,6 +115,106 @@ def run_native_qlimb_9qubit_example():
     print("\n[Observation]: The newly augmented tensors at the boundaries strictly possess")
     print("a trivial bond dimension of chi=1. The active bulk's chi=2 entanglement remains perfectly intact.")
 
+def generate_normalized_vector(size=4):
+    """Generates random amplitudes satisfying normalization Eq. (24)."""
+    vec = np.random.rand(size) + 1j * np.random.rand(size)
+    return vec / np.linalg.norm(vec)
+
+def apply_2qubit_givens(vec, i, j, theta, phi):
+    """
+    Applies a 2-qubit nearest-neighbor Givens rotation.
+    Crucially, it applies U2 directly to [vec[i], vec[j]] in whatever 
+    order they are passed, seamlessly handling reversed physical targeting.
+    """
+    c, s = np.cos(theta), np.sin(theta)
+    phc = np.exp(-1j * phi)
+    
+    U2 = np.array([
+        [c, -phc * s],
+        [s,  phc * c]
+    ], dtype=complex)
+    
+    # Apply exactly to the ordered pair requested
+    out = U2 @ np.array([vec[i], vec[j]])
+    vec[i] = out[0]
+    vec[j] = out[1]
+    
+    return vec
+
+def run_spatial_qfew_routing():
+    up_components = generate_normalized_vector()
+    down_components = generate_normalized_vector()
+    
+    v_up = np.array([
+        up_components[0], # \alpha_{f,\uparrow}
+        up_components[1], # \alpha_{e,\uparrow}
+        up_components[2], # v_{1,\uparrow}
+        up_components[3]  # v_{0,\uparrow}
+    ])
+    
+    v_down = np.array([
+        down_components[3], # v_{0,\downarrow}
+        down_components[2], # v_{1,\downarrow}
+        down_components[1], # \alpha_{e,\downarrow}
+        down_components[0]  # \alpha_{f,\downarrow}
+    ])
+    
+    print("=== Initial Ordered Vectors ===")
+    print(f"Eq (24) Normalization Check (Up): {np.linalg.norm(v_up):.4f}")
+    print(f"Eq (24) Normalization Check (Down): {np.linalg.norm(v_down):.4f}")
+
+    # =========================================================================
+    # 2. Applying Q^\dag_few to the Up-Spin Chain (Target: Last Index)
+    # =========================================================================
+    print("\n=== Routing Up-Spin Chain (Targeting Index 3) ===")
+    print(f"Start : {np.round(np.abs(v_up), 4)}")
+    
+    # Pass reversed array to compute gates that collapse to the "first" index of the reversed view[cite: 5]
+    v_up_rev = v_up[::-1].copy()
+    decomp_up, _, _ = givens_decomposition((v_up_rev / np.linalg.norm(v_up_rev)).reshape(1, -1))
+    
+    # Array of physical indices corresponding exactly to the reversed array
+    order_up = [3, 2, 1, 0]
+    
+    v_up_routed = v_up.copy()
+    for layer in decomp_up:
+        for (i, j, theta, phi) in layer:
+            # Map the reversed indices directly to their physical counterparts
+            phys_i = order_up[i]
+            phys_j = order_up[j]
+            
+            # Because phys_i > phys_j, the rotation is applied in reverse, 
+            # perfectly pushing the amplitude to the right instead of the left.
+            v_up_routed = apply_2qubit_givens(v_up_routed, phys_i, phys_j, theta, phi)
+            
+            # Print standard left-to-right physical bounds
+            left, right = min(phys_i, phys_j), max(phys_i, phys_j)
+            print(f"Gate on ({left},{right}) -> {np.round(np.abs(v_up_routed), 4)}")
+
+    print(r"Result: \bar{{c}}_{{0,\uparrow}} is physically at index 3, exactly above the impurity!")
+
+    # =========================================================================
+    # 3. Applying Q^\dag_few to the Down-Spin Chain (Target: First Index)
+    # =========================================================================
+    print("\n=== Routing Down-Spin Chain (Targeting Index 0) ===")
+    print(r"Start : {np.round(np.abs(v_down), 4)}")
+    
+    v_down_copy = v_down.copy()
+    decomp_down, _, _ = givens_decomposition((v_down_copy / np.linalg.norm(v_down_copy)).reshape(1, -1))
+    
+    order_down = [0, 1, 2, 3]
+    v_down_routed = v_down.copy()
+    for layer in decomp_down:
+        for (i, j, theta, phi) in layer:
+            phys_i = order_down[i]
+            phys_j = order_down[j]
+            
+            v_down_routed = apply_2qubit_givens(v_down_routed, phys_i, phys_j, theta, phi)
+            print(f"Gate on ({phys_i},{phys_j}) -> {np.round(np.abs(v_down_routed), 4)}")
+
+    print(r"Result: \bar{{c}}_{{0,\downarrow}} is physically at index 0, exactly below the impurity!")
+
 if __name__ == "__main__":
-    run_occupancy_verification()
-    run_native_qlimb_9qubit_example()
+    #run_occupancy_verification()
+    #run_native_qlimb_9qubit_example()
+    run_spatial_qfew_routing()
