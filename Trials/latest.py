@@ -171,7 +171,7 @@ bond_dim_array = []
 # Reuses N, theta, theta_K, theta_z, no_floquet_steps, psi, UK (from build_UK), Sz from your main script.
 #====================================================================================================================
 
-import numpy as np
+"""import numpy as np
 from scipy.linalg import expm
 from scipy import sparse
 from scipy.sparse import kron as skron, identity as sident
@@ -257,7 +257,7 @@ print(bond_dims_exact)
 impurity_mag_trimmed = impurity_mag[:-1]   # drop trailing boundary-closure entry (see earlier discussion)
 
 max_diff = np.max(np.abs(np.array(impurity_mag_trimmed) - np.array(impurity_mag_exact)))
-print("Max |Trotter - Exact| over all steps:", max_diff)
+print("Max |Trotter - Exact| over all steps:", max_diff)"""
 
 #----------------------------------------------------------------------------------------------------------
 # directly exponentiating the kinetic part of the Hamiltonian and applying it to the statevector.
@@ -344,7 +344,7 @@ plt.show()'''
 
 #----------------------------------------------------------------------------------------------------------
 
-'''if no_floquet_steps > 0:
+if no_floquet_steps > 0:
 
     # Initial half kinetic evolution (theta) 
     for left in range(0, N - 1, 2):
@@ -406,4 +406,96 @@ if bond_dim == np.inf:
 else:
     plt.title("Impurity Magnetization vs No. of Floquet Steps\n\n" f"$\chi$ = {psi_mps.get_bond_dimensions()}\n" f"Maximum $\chi$ = {bond_dim}", fontsize=14,fontweight='bold')
 plt.legend()
-plt.show()'''
+plt.show()
+
+
+# =================================================================================================================
+# 6: REVERSED FLOQUET ORDER -- KONDO INTERACTION FIRST, THEN EXACT BATH HOPPING
+# =================================================================================================================
+# This section is deliberately appended below the original benchmark.  It does
+# not alter any of the original gates, parameters, Trotter circuit, or plots.
+# The functions use the same angle parameters above, mapped to the current
+# exp(-i H T) convention with T=1.
+
+def latest_angles_in_current_convention():
+    """Return (Jk, Jz, t0) for current T=1 from latest.py's angles."""
+    return 2.0 * theta_K, 2.0 * theta_z, 2.0 * theta
+
+
+def _load_current_sergio_implementations():
+    """Load the implementations kept in the sibling Soumyadeep_code folder."""
+    from pathlib import Path
+    import sys
+
+    code_dir = Path(__file__).resolve().parents[1] / "Soumyadeep_code"
+    if str(code_dir) not in sys.path:
+        sys.path.insert(0, str(code_dir))
+
+    from sergio_exact_mps_qlimb import exact_mps_floquet
+    from sergio_full_mps import direct_floquet_dense
+    from sergio_qlimb_openfermion import sergio_step_floquet
+
+    return exact_mps_floquet, direct_floquet_dense, sergio_step_floquet
+
+
+def reversed_order_exact(exact_backend="dense"):
+    """Run Kondo first, then bath hopping, without SERGIO approximation."""
+    exact_mps_floquet, direct_floquet_dense, _ = (
+        _load_current_sergio_implementations()
+    )
+    Jk, Jz, t0 = latest_angles_in_current_convention()
+    arguments = dict(
+        N=N,
+        no_floquet_steps=no_floquet_steps,
+        Jk=Jk,
+        Jz=Jz,
+        T=1.0,
+        t0=t0,
+        boundary="obc",
+        initial_boundary="pbc",
+        floquet_order="interaction_then_free",
+    )
+    if exact_backend == "dense":
+        return direct_floquet_dense(**arguments)
+    if exact_backend == "mps":
+        return exact_mps_floquet(**arguments)
+    raise ValueError("exact_backend must be 'dense' or 'mps'")
+
+
+def reversed_order_sergio(tol=1e-10):
+    """Run SERGIO with Kondo first and exact bath hopping second."""
+    _, _, sergio_step_floquet = _load_current_sergio_implementations()
+    Jk, Jz, t0 = latest_angles_in_current_convention()
+    return sergio_step_floquet(
+        N=N,
+        no_floquet_steps=no_floquet_steps,
+        Jk=Jk,
+        Jz=Jz,
+        T=1.0,
+        t0=t0,
+        boundary="obc",
+        initial_boundary="pbc",
+        floquet_order="interaction_then_free",
+        bond_dim=bond_dim,
+        tol=tol,
+    )
+
+
+def plot_original_and_reversed_orderings(
+    exact_backend="dense", tol=1e-10, show=True
+):
+    """Overlay exact and SERGIO results for both Floquet orderings."""
+    from pathlib import Path
+    import sys
+
+    code_dir = Path(__file__).resolve().parents[1] / "Soumyadeep_code"
+    if str(code_dir) not in sys.path:
+        sys.path.insert(0, str(code_dir))
+    from latest_sergio_comparison import run_latest_sergio_comparison
+
+    return run_latest_sergio_comparison(
+        exact_backend=exact_backend,
+        tol=tol,
+        include_reversed_order=True,
+        show=show,
+    )
