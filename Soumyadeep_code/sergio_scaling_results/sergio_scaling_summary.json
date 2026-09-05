@@ -1,0 +1,62 @@
+{
+  "parameters": {
+    "T": 1.0,
+    "Jk": 1.5707963267948966,
+    "Jz": 0.5073059361772884,
+    "t0": 2.0943951023931953,
+    "tol": 1e-10,
+    "boundary": "obc",
+    "initial_boundary": "pbc",
+    "floquet_order": "interaction_then_free"
+  },
+  "sizes": [
+    {
+      "N": 6,
+      "last_step": 3,
+      "final_M_up": 6,
+      "final_M_down": 6,
+      "full_at_step": 3,
+      "peak_bond_dimension": 27,
+      "initialization_seconds": 0.0014241250173654407,
+      "evolution_seconds": 0.2377429999760352,
+      "total_seconds": 0.23916712499340065,
+      "stop_reason": "full_active_space"
+    },
+    {
+      "N": 10,
+      "last_step": 5,
+      "final_M_up": 10,
+      "final_M_down": 10,
+      "full_at_step": 5,
+      "peak_bond_dimension": 238,
+      "initialization_seconds": 0.001648624980589375,
+      "evolution_seconds": 16.30941695801448,
+      "total_seconds": 16.31106558299507,
+      "stop_reason": "full_active_space"
+    },
+    {
+      "N": 14,
+      "last_step": 5,
+      "final_M_up": 10,
+      "final_M_down": 10,
+      "full_at_step": null,
+      "peak_bond_dimension": 260,
+      "initialization_seconds": 0.0023585839953739196,
+      "evolution_seconds": 35.70805920800194,
+      "total_seconds": 35.710417791997315,
+      "stop_reason": "max_bond_abort"
+    },
+    {
+      "N": 18,
+      "last_step": 5,
+      "final_M_up": 10,
+      "final_M_down": 10,
+      "full_at_step": null,
+      "peak_bond_dimension": 266,
+      "initialization_seconds": 0.004293666017474607,
+      "evolution_seconds": 75.27277458301978,
+      "total_seconds": 75.27706824903726,
+      "stop_reason": "max_bond_abort"
+    }
+  ]
+}
